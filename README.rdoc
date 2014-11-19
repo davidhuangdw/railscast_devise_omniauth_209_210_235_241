@@ -1,28 +1,128 @@
-== README
+### Omniauth
 
-This README would normally document whatever steps are necessary to get the
-application up and running.
+        # allow omniauth provide without email
 
-Things you may want to cover:
+        # pass omni data to registration_url:
+        # callback_controller ---> session: omniauth_callbacks_controller.rb
+          def douban
+            ...
+            if @user.persisted?
+              ...
+            else
+              session[:omni] = {provider:@user.provider, uid:@user.uid}
+              redirect_to new_user_registration_url
+            end
+          end
+        # session ---> user_controller.new: models/user.rb
+          def self.new_with_session(params,session)
+            super.tap do |user|
+              omni=session[:omni].try(:symbolize_keys)
+              if omni
+                session[:omni] = nil
+                user.provider = omni[:provider]
+                user.uid = omni[:uid]
+              end
+            end
+          end
+        # view ---> user_controller.create: views/devise/registration/new.html.erb
+            <%= f.input :provider, as: :hidden%>
+            <%= f.input :uid, as: :hidden%>
 
-* Ruby version
-
-* System dependencies
-
-* Configuration
-
-* Database creation
-
-* Database initialization
-
-* How to run the test suite
-
-* Services (job queues, cache servers, search engines, etc.)
-
-* Deployment instructions
-
-* ...
+        # permit params for :provider, :uid
+        # application_controller.rb
+          before_action :configure_permitted_parameters, if: :devise_controller?
+          def configure_permitted_parameters
+            devise_parameter_sanitizer.for(:sign_up) do |params|
+              params.permit(:email, :password, :password_confirmation, :provider, :uid)
+            end
+          end
 
 
-Please feel free to use a different markup language if you do not plan to run
-<tt>rake doc:app</tt>.
+
+        # controller
+        rails g controller Users::OmniauthCallbacks
+        # users/omniauth_callbacks_controller
+        class Users::OmniauthCallbacksController < ApplicationController
+          def douban
+            auth = @omniauth = env['omniauth.auth']
+            @user = from_omniauth(auth)
+
+            if @user.persisted?
+              sign_in_and_redirect @user, :event => :authentication #this will throw if @user is not activated
+              # set_flash_message(:notice, :success, :kind => "Douban") if is_navigational_format?
+            else
+              raise "cannot create: provider doesn't provide email"
+              # session["devise.omni"] = {provider:@user.provider, uid:@user.uid}
+              # redirect_to new_user_registration_url
+            end
+          end
+          private
+          def from_omniauth(auth)
+            User.where(provider:auth.provider, uid:auth.uid).first_or_create do |user|
+              user.email = auth.email || "#{auth.uid}@#{auth.provider}"+".cc"
+              user.password = Devise.friendly_token[0,20]
+            end
+          end
+        end
+
+        # models/user.rb
+         def self.from_omniauth(auth)
+            where(provider:auth.provider, uid:auth.uid).first_or_create do |user|
+            end
+          end
+
+        # callback location setup on developer.douban.com:
+        http://localhost:3000/users/auth/douban/callback
+
+
+        # routes
+          devise_for :users, controllers: { omniauth_callbacks: "users/omniauth_callbacks" }
+
+        # model/user.rb
+        devise :omniauthable, :omniauth_providers => [:douban]
+        # provided_path:
+            user_omniauth_authorize_path(provider)
+            user_omniauth_callback_path(provider)
+            <%= link_to "Sign in with Facebook", user_omniauth_authorize_path(:facebook) %>
+
+
+        # config/initializers/devise.rb
+        config.omniauth :douban, "APP_ID", "APP_SECRET"
+
+        # add column
+        rails g migration AddColumnsToUsers provider uid
+        rake db:migrate
+
+        # add strategies gem
+        gem 'omniauth-douban-oauth2'
+        # it provide douban strategies module:
+        module OmniAuth
+          module Strategies
+            class Douban < OmniAuth::Strategies::OAuth2
+            ....
+
+### devise
+
+
+        # access control: authenticate_user!
+        before_action :authenticate_user!, except:[:show]    # login before visit
+        before_action :owns_trip, only: [:edit, :update, :destroy]
+        ..
+        def owns_trip
+          unless user_signed_in? && current_user == @trip.user
+            redirect_to trips, error: "You cannot do that"
+          end
+        end
+
+        # routes:
+            - if user_signed_in?
+              %li= link_to "Profile #{current_user.email}", edit_user_registration_path
+              %li= link_to 'Logout', destroy_user_session_path, method: :delete     # need 'delete'
+            - else
+              %li= link_to "Login", new_user_session_path
+
+        # custom model, migration ...
+
+        rails g devise user
+        rails g devise:view
+        gem 'devise'
